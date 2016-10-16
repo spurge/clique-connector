@@ -10,32 +10,24 @@ from messenger import Messenger
 class TestMessenger(TestCase):
 
     def setUp(self):
-        self.loop = asyncio.get_event_loop()
         self.messenger = Messenger('amqp://localhost')
 
     def tearDown(self):
         if self.messenger.connection is not None:
             self.messenger.connection.close()
 
-    def test_connect(self):
-        self.loop.run_until_complete(asyncio.wait(
-            self.messenger.connect()
-        ))
-
     def test_command(self):
-        future = asyncio.Future()
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
 
-        def callback(command):
-            print(command)
-            future.set_result(command)
+        disposable = self.messenger.get_command_listener().timeout(
+            3000
+        ).subscribe(
+            lambda c: not future.done() and future.set_result(c),
+            lambda e: loop.stop()
+        )
 
-        async def timeout():
-            await asyncio.sleep(10)
-            future.set_exception(Exception('Timed out'))
+        self.messenger.publish_command('test')
 
-        self.loop.run_until_complete(asyncio.wait([
-            future,
-            self.messenger.listen_for_commands(callback),
-            self.messenger.publish_command('test'),
-            timeout()
-        ]))
+        loop.run_until_complete(future)
+        disposable.dispose()

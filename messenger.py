@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 
-import asyncio
 import json
 import pika
 
 from os import uname
+from rx import Observable
 from time import time
 from uuid import getnode
 
@@ -27,52 +27,58 @@ class Messenger:
         return json.dumps(dict(uuid=self.get_uuid(),
                                **kwargs))
 
-    async def connect(self):
+    def connect(self):
         if self.connection is None:
             parameters = pika.URLParameters(self.url)
             self.connection = pika.BlockingConnection(parameters)
 
-            await self.set_channels()
-            await self.publish_online()
+            self.set_channels()
+            self.publish_online()
 
-    async def set_channels(self):
+    def set_channels(self):
         if self.channel is None:
             self.channel = self.connection.channel()
             self.channel.queue_declare(queue='clique-commands')
             self.channel.queue_declare(queue='clique-responses')
             self.channel.queue_declare(queue='clique-status')
 
-    async def publish_online(self):
-        await self.connect()
+    def publish_online(self):
+        self.connect()
         self.channel.basic_publish(exchange='',
                                    routing_key='clique-status',
                                    body=self.encode_message(host=uname(),
                                                             time=time()))
 
-    async def publish_command(self, command, **kwargs):
-        await self.connect()
+    def publish_command(self, command, **kwargs):
+        self.connect()
         self.channel.basic_publish(exchange='',
                                    routing_key='clique-commands',
                                    body=self.encode_message(command=command,
                                                             **kwargs))
 
-    async def publish_stats(self, stats):
-        await self.connect()
+    def publish_stats(self, stats):
+        self.connect()
         self.channel.basic_publish(exchange='',
                                    routing_key='clique-status',
                                    body=self.encode_message(stats=stats))
 
-    async def listen_for_commands(self, callback):
-        await self.connect()
+    def fetch_command(self):
+        try:
+            m, p, b = self.channel.basic_get(queue='clique-commands')
 
-        while True:
-            try:
-                m, p, b = self.channel.basic_get(queue='clique-commands')
+            if b is not None:
+                self.channel.basic_ack(m.delivery_tag)
+                return b.decode('utf8')
+        except:
+            pass
 
-                if b is not None:
-                    callback(b.decode())
-                    self.channel.basic_ack(m.delivery_tag)
-            except:
-                pass
+    def get_command_listener(self):
+        self.connect()
 
-            await asyncio.sleep(1)
+        return Observable.interval(
+            1000
+        ).map(
+            lambda _: self.fetch_command()
+        ).where(
+            lambda data: data is not None
+        )
