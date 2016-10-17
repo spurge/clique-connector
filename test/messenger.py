@@ -16,18 +16,34 @@ class TestMessenger(TestCase):
         if self.messenger.connection is not None:
             self.messenger.connection.close()
 
+    def test_online(self):
+        loop = asyncio.get_event_loop()
+
+        async def test():
+            result = await self.messenger \
+                .get_status_listener() \
+                .first() \
+                .timeout(3000)
+
+            self.assertIsInstance(result['host'], list)
+            self.assertIsInstance(result['time'], float)
+            self.assertEqual(result['uuid'], self.messenger.uuid)
+
+        loop.run_until_complete(test())
+
     def test_command(self):
         loop = asyncio.get_event_loop()
-        future = loop.create_future()
 
-        disposable = self.messenger.get_command_listener().timeout(
-            3000
-        ).subscribe(
-            lambda c: not future.done() and future.set_result(c),
-            lambda e: loop.stop()
-        )
+        async def test():
+            result = await self.messenger \
+                .get_command_listener() \
+                .first() \
+                .timeout(3000)
 
-        self.messenger.publish_command('test')
+            self.assertEqual(result['command'], 'test')
+            self.assertEqual(result['arg'], 'value')
+            self.assertEqual(result['uuid'], self.messenger.uuid)
 
-        loop.run_until_complete(future)
-        disposable.dispose()
+        self.messenger.publish_command('test', arg='value')
+
+        loop.run_until_complete(test())

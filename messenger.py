@@ -5,6 +5,7 @@ import pika
 
 from os import uname
 from rx import Observable
+from rx.concurrency import AsyncIOScheduler
 from time import time
 from uuid import getnode
 
@@ -13,72 +14,73 @@ class Messenger:
 
     def __init__(self, url):
         self.url = url
-        self.uuid = None
-        self.connection = None
-        self.channel = None
+        self.__uuid = None
+        self.__connection = None
+        self.__channel = None
 
-    def get_uuid(self):
-        if self.uuid is None:
-            self.uuid = str(getnode())
+    @property
+    def uuid(self):
+        if self.__uuid is None:
+            self.__uuid = str(getnode())
 
-        return self.uuid
+        return self.__uuid
 
-    def encode_message(self, **kwargs):
-        return json.dumps(dict(uuid=self.get_uuid(),
-                               **kwargs))
-
-    def connect(self):
-        if self.connection is None:
+    @property
+    def connection(self):
+        if self.__connection is None:
             parameters = pika.URLParameters(self.url)
-            self.connection = pika.BlockingConnection(parameters)
+            self.__connection = pika.BlockingConnection(parameters)
 
-            self.set_channels()
             self.publish_online()
 
-    def set_channels(self):
-        if self.channel is None:
-            self.channel = self.connection.channel()
-            self.channel.queue_declare(queue='clique-commands')
-            self.channel.queue_declare(queue='clique-responses')
-            self.channel.queue_declare(queue='clique-status')
+        return self.__connection
+
+    @property
+    def channel(self):
+        if self.__channel is None:
+            self.__channel = self.connection.channel()
+            self.__channel.queue_declare(queue='clique-command')
+            self.__channel.queue_declare(queue='clique-response')
+            self.__channel.queue_declare(queue='clique-status')
+
+        return self.__channel
+
+    def encode_message(self, **kwargs):
+        return json.dumps(dict(uuid=self.uuid,
+                               **kwargs))
+
+    def publish(self, key, **kwargs):
+        self.channel.basic_publish(exchange='',
+                                   routing_key='clique-%s' % key,
+                                   body=self.encode_message(**kwargs))
 
     def publish_online(self):
-        self.connect()
-        self.channel.basic_publish(exchange='',
-                                   routing_key='clique-status',
-                                   body=self.encode_message(host=uname(),
-                                                            time=time()))
+        self.publish('status', host=uname(), time=time())
 
     def publish_command(self, command, **kwargs):
-        self.connect()
-        self.channel.basic_publish(exchange='',
-                                   routing_key='clique-commands',
-                                   body=self.encode_message(command=command,
-                                                            **kwargs))
+        self.publish('command', command=command, **kwargs)
 
     def publish_stats(self, stats):
-        self.connect()
-        self.channel.basic_publish(exchange='',
-                                   routing_key='clique-status',
-                                   body=self.encode_message(stats=stats))
+        self.publish('status', stats=stats)
 
-    def fetch_command(self):
+    def fetch(self, key):
         try:
-            m, p, b = self.channel.basic_get(queue='clique-commands')
+            m, p, b = self.channel.basic_get(queue='clique-%s' % key)
 
             if b is not None:
                 self.channel.basic_ack(m.delivery_tag)
-                return b.decode('utf8')
+                return json.loads(b.decode('utf8'))
         except:
             pass
 
-    def get_command_listener(self):
-        self.connect()
+    def get_listener(self, key):
+        return Observable.interval(1000,
+                                   scheduler=AsyncIOScheduler()) \
+            .map(lambda _: self.fetch(key)) \
+            .where(lambda c: c is not None)
 
-        return Observable.interval(
-            1000
-        ).map(
-            lambda _: self.fetch_command()
-        ).where(
-            lambda data: data is not None
-        )
+    def get_status_listener(self):
+        return self.get_listener('status')
+
+    def get_command_listener(self):
+        return self.get_listener('command')
