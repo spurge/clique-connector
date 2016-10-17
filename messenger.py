@@ -60,6 +60,9 @@ class Messenger:
     def publish_command(self, command, **kwargs):
         self.publish('command', command=command, **kwargs)
 
+    def publish_response(self, command, **kwargs):
+        self.publish('response', command=command, **kwargs)
+
     def publish_stats(self, stats):
         self.publish('status', stats=stats)
 
@@ -84,3 +87,6 @@ class Messenger:
 
     def get_command_listener(self):
         return self.get_listener('command')
+
+    def get_response_listener(self):
+        return self.get_listener('response')
