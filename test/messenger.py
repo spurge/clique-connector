@@ -23,41 +23,29 @@ class TestMessenger(TestCase):
                 .first() \
                 .timeout(3000)
 
-            self.assertIsInstance(result['host'], list)
+            self.assertIsInstance(result['uname'], list)
             self.assertIsInstance(result['time'], float)
+            self.assertIsInstance(result['checksum'], str)
             self.assertEqual(result['uuid'], self.messenger.uuid)
 
         loop = asyncio.get_event_loop()
         loop.run_until_complete(test())
 
     def test_command(self):
+        checksum = self.messenger.publish_command('test',
+                                                  arg='value')
+
         async def test():
             result = await self.messenger \
                 .get_command_listener() \
+                .where(lambda c: c['checksum'] == checksum) \
                 .first() \
                 .timeout(3000)
 
             self.assertEqual(result['command'], 'test')
             self.assertEqual(result['arg'], 'value')
             self.assertEqual(result['uuid'], self.messenger.uuid)
-
-        self.messenger.publish_command('test', arg='value')
-
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(test())
-
-    def test_response(self):
-        async def test():
-            result = await self.messenger \
-                .get_response_listener() \
-                .first() \
-                .timeout(3000)
-
-            self.assertEqual(result['command'], 'test')
-            self.assertEqual(result['arg'], 'value')
-            self.assertEqual(result['uuid'], self.messenger.uuid)
-
-        self.messenger.publish_response('test', arg='value')
+            self.assertIsInstance(result['time'], float)
 
         loop = asyncio.get_event_loop()
         loop.run_until_complete(test())

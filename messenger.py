@@ -3,6 +3,7 @@
 import json
 import pika
 
+from hashlib import md5
 from os import uname
 from rx import Observable
 from rx.concurrency import AsyncIOScheduler
@@ -46,25 +47,31 @@ class Messenger:
         return self.__channel
 
     def encode_message(self, **kwargs):
-        return json.dumps(dict(uuid=self.uuid,
-                               **kwargs))
+        props = dict(uuid=self.uuid,
+                     time=time(),
+                     **kwargs)
+        checksum = md5(json.dumps(props).encode('utf8')).hexdigest()
+        props['checksum'] = checksum
+        return checksum, json.dumps(props)
 
     def publish(self, key, **kwargs):
+        checksum, message = self.encode_message(**kwargs)
         self.channel.basic_publish(exchange='',
                                    routing_key='clique-%s' % key,
-                                   body=self.encode_message(**kwargs))
+                                   body=message)
+        return checksum
 
     def publish_online(self):
-        self.publish('status', host=uname(), time=time())
+        return self.publish('status', uname=uname())
 
     def publish_command(self, command, **kwargs):
-        self.publish('command', command=command, **kwargs)
+        return self.publish('command', command=command, **kwargs)
 
     def publish_response(self, command, **kwargs):
-        self.publish('response', command=command, **kwargs)
+        return self.publish('response', command=command, **kwargs)
 
     def publish_stats(self, stats):
-        self.publish('status', stats=stats)
+        return self.publish('status', stats=stats)
 
     def fetch(self, key):
         try:
