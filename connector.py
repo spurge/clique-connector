@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+from rx import Observable
+
 from messenger import Messenger
 
 
@@ -16,40 +18,36 @@ class Connector:
 
         return self.__messenger
 
-    async def create_machine(self, name, image, cpu, mem):
-        checksum = self.messenger.publish_command(
-            command='machine-requested',
-            name=name,
-            image=image,
-            cpu=cpu,
-            mem=mem
-        )
-
-        return await self.messenger.get_response_listener() \
-            .tap(print) \
-            .where(lambda r: r['requested_checksum'] == checksum) \
+    def create_machine(self, name, image, cpu, mem, public_key):
+        return Observable.just(self.messenger.publish_command(
+                command='machine-requested',
+                name=name,
+                image=image,
+                cpu=cpu,
+                mem=mem,
+                pkey=public_key
+            )) \
+            .flat_map(
+                lambda cs:
+                    self.messenger.get_response_listener()
+                    .where(lambda r: r['requested_checksum'] == cs)
+            ) \
             .first() \
-            .tap(print) \
             .map(lambda r: self.messenger.publish_command(
                 'machine-confirmed',
                 confirmed_checksum=r['checksum']
             )) \
-            .tap(lambda cs: print('map', cs)) \
             .flat_map(
                 lambda cs:
                     self.messenger.get_response_listener()
-                    .tap(lambda r: print('flatmap', cs, r))
                     .where(
                         lambda r:
                             r['requested_checksum'] == cs
                     )
-                    .first()
-                    .tap(print)
             ) \
-            .map(lambda r: {key: value for key, value in r if key in [
-                'host', 'username', 'password'
-            ]}) \
-            .tap(print)
+            .first() \
+            .map(lambda r: dict(host=r['host'],
+                                username=r['username'])) \
 
     def stop_machine(self, name):
         pass
@@ -57,10 +55,9 @@ class Connector:
     def send_stats(self):
         pass
 
-    async def wait_for_machine(self, callback):
-        return await self.messenger.get_command_listener() \
+    def wait_for_machines(self, callback):
+        return self.messenger.get_command_listener() \
             .where(lambda c: c['command'] == 'machine-requested') \
-            .tap(print) \
             .map(lambda c: self.messenger.publish_response(
                 'machine-requested',
                 requested_checksum=c['checksum']
@@ -73,7 +70,6 @@ class Connector:
                             c['confirmed_checksum'] == cs
                     )
                     .first()
-                    .tap(print)
                     .map(
                         lambda c:
                             self.messenger.publish_response(
@@ -82,8 +78,7 @@ class Connector:
                                 **(callback('', '', ''))
                             )
                     )
-            ) \
-            .tap(print)
+            )
 
     def listen_for_stats(self):
         pass

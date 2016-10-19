@@ -18,13 +18,25 @@ class TestConnector(TestCase):
     def test_create_machine(self):
         def callback(name, cpu, mem):
             return dict(host='testhost',
-                        username='testuser',
-                        password='password')
+                        username='testuser')
 
         loop = asyncio.get_event_loop()
-        req = self.connector.create_machine('testmachine',
-                                            'alpine',
-                                            1,
-                                            512)
-        res = self.connector.wait_for_machine(callback)
-        loop.run_until_complete(asyncio.wait([req, res]))
+
+        result, _ = loop.run_until_complete(asyncio.wait([
+            self.connector.create_machine(
+                'testmachine',
+                'alpine',
+                1,
+                512,
+                'public-key'
+            )
+            .timeout(5000),
+            self.connector.wait_for_machines(callback)
+            .first()
+            .timeout(5000)
+        ]))
+
+        (create,) = (r.result() for r in result if 'host' in r.result())
+
+        self.assertEqual(create['host'], 'testhost')
+        self.assertEqual(create['username'], 'testuser')
