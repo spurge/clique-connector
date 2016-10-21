@@ -19,6 +19,8 @@ class Connector:
         return self.__messenger
 
     def create_machine(self, name, image, cpu, mem, public_key):
+        response_listener = self.messenger.get_response_listener()
+
         return Observable.just(self.messenger.publish_command(
                 command='machine-requested',
                 name=name,
@@ -29,25 +31,33 @@ class Connector:
             )) \
             .flat_map(
                 lambda cs:
-                    self.messenger.get_response_listener()
+                    response_listener
                     .where(lambda r: r['requested_checksum'] == cs)
-            ) \
-            .first() \
-            .map(lambda r: self.messenger.publish_command(
-                'machine-confirmed',
-                confirmed_checksum=r['checksum']
-            )) \
-            .flat_map(
-                lambda cs:
-                    self.messenger.get_response_listener()
-                    .where(
+                    .first()
+                    .timeout(10000)
+                    .flat_map(
                         lambda r:
-                            r['requested_checksum'] == cs
+                            Observable.just(
+                                self.messenger.publish_command(
+                                    'machine-confirmed',
+                                    confirmed_checksum=r['checksum']
+                                )
+                            )
                     )
+                    .flat_map(
+                        lambda cs:
+                            response_listener
+                            .where(
+                                lambda r:
+                                    r['requested_checksum'] == cs
+                            )
+                            .first()
+                            .timeout(10000)
+                    )
+                    .retry(10)
             ) \
-            .first() \
             .map(lambda r: dict(host=r['host'],
-                                username=r['username'])) \
+                                username=r['username']))
 
     def stop_machine(self, name):
         pass
@@ -56,26 +66,35 @@ class Connector:
         pass
 
     def wait_for_machines(self, callback):
-        return self.messenger.get_command_listener() \
-            .where(lambda c: c['command'] == 'machine-requested') \
-            .map(lambda c: self.messenger.publish_response(
-                'machine-requested',
-                requested_checksum=c['checksum']
-            )) \
+        command_listener = self.messenger.get_command_listener()
+
+        return command_listener \
+            .where(lambda cr: cr['command'] == 'machine-requested') \
             .flat_map(
-                lambda cs:
-                    self.messenger.get_command_listener()
-                    .where(
-                        lambda c:
-                            c['confirmed_checksum'] == cs
-                    )
-                    .first()
-                    .map(
-                        lambda c:
-                            self.messenger.publish_response(
-                                'machine-confirmed',
-                                requested_checksum=c['checksum'],
-                                **(callback('', '', ''))
+                lambda cr:
+                    Observable.just(self.messenger.publish_response(
+                        'machine-requested',
+                        requested_checksum=cr['checksum']
+                    ))
+                    .flat_map(
+                        lambda cs:
+                            command_listener
+                            .where(
+                                lambda cc:
+                                    cc['confirmed_checksum'] == cs
+                            )
+                            .first()
+                            .map(
+                                lambda cc:
+                                    self.messenger.publish_response(
+                                        'machine-confirmed',
+                                        requested_checksum=cc['checksum'],
+                                        **(callback(
+                                            cr['name'],
+                                            cr['cpu'],
+                                            cr['mem']
+                                        ))
+                                    )
                             )
                     )
             )
