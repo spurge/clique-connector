@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 
 import json
-import pika
+import logging
 
+from amqpstorm import Connection, \
+                      Message
 from functools import partial
 from hashlib import md5
 from os import uname
 from rx import Observable
+from rx.concurrency import AsyncIOScheduler
 from time import time
 from uuid import uuid1
 
@@ -14,14 +17,17 @@ from uuid import uuid1
 class Messenger:
 
     COMMAND_QUEUE_NAME = 'clique-command'
+    RESPONSE_QUEUE_NAME = 'clique-response-%s-%s'
     STATUS_EXCHANGE_NAME = 'clique-status'
     STATUS_QUEUE_NAME = 'clique-status-%s'
 
-    def __init__(self, url):
-        self.url = url
+    def __init__(self, host):
+        self.host = host
         self.__uuid = None
         self.__connection = None
         self.__channel = None
+
+        self.publish_online()
 
     @property
     def uuid(self):
@@ -33,10 +39,8 @@ class Messenger:
     @property
     def connection(self):
         if self.__connection is None:
-            parameters = pika.URLParameters(self.url)
-            self.__connection = pika.BlockingConnection(parameters)
-
-            self.publish_online()
+            logging.debug('Connect to AMQP: %s', self.host)
+            self.__connection = Connection(self.host, 'guest', 'guest')
 
         return self.__connection
 
@@ -44,7 +48,6 @@ class Messenger:
     def channel(self):
         if self.__channel is None:
             self.__channel = self.connection.channel()
-            self.__channel.queue_declare(queue='clique-response')
 
         return self.__channel
 
@@ -53,22 +56,34 @@ class Messenger:
         self.channel.queue_declare(queue=self.COMMAND_QUEUE_NAME)
         return self.COMMAND_QUEUE_NAME
 
-    @property
-    def status_exchange(self):
-        self.channel.exchange_declare(exchange=self.STATUS_EXCHANGE_NAME,
-                                      exchange_type='fanout')
-        return self.STATUS_EXCHANGE_NAME
+    def status_exchange(self, channel):
+        logging.debug('Declaring status exchange: %s',
+                      self.STATUS_EXCHANGE_NAME)
+        channel.exchange.declare(exchange=self.STATUS_EXCHANGE_NAME,
+                                 exchange_type='fanout')
+        return dict(exchange=self.STATUS_EXCHANGE_NAME,
+                    routing_key='')
 
-    @property
-    def status_queue(self):
-        queue = self.channel.queue_declare(
-            queue=self.STATUS_QUEUE_NAME % self.uuid,
-            exclusive=True
-        )
-        self.channel.queue_bind(exchange=self.status_exchange,
-                                routing_key='',
-                                queue=queue.method.queue)
-        return queue.method.queue
+    def status_queue(self, channel):
+        name = self.STATUS_QUEUE_NAME % self.uuid
+        logging.debug('Declaring status queue: %s', name)
+        channel.queue.declare(name,
+                              exclusive=True)
+        channel.queue.bind(queue=name,
+                           **(self.status_exchange(channel)))
+        return dict(queue=name)
+
+    def response_queue(self, uuid, checksum):
+        queue = self.RESPONSE_QUEUE_NAME % (uuid, checksum)
+
+        if self.uuid == uuid:
+            self.channel.queue_declare(
+                queue=queue,
+                exclusive=True)
+        else:
+            self.channel.queue_declare(queue=queue)
+
+        return queue
 
     def encode_message(self, **kwargs):
         props = dict(uuid=self.uuid,
@@ -77,13 +92,6 @@ class Messenger:
         checksum = md5(json.dumps(props).encode('utf8')).hexdigest()
         props['checksum'] = checksum
         return checksum, json.dumps(props)
-
-    def publish(self, key, **kwargs):
-        checksum, message = self.encode_message(**kwargs)
-        self.channel.basic_publish(exchange='',
-                                   routing_key='clique-%s' % key,
-                                   body=message)
-        return checksum
 
     def publish_online(self):
         return self.publish_stats(uname=uname())
@@ -95,57 +103,73 @@ class Messenger:
                                    body=message)
         return checksum
 
-    def publish_response(self, command, **kwargs):
-        return self.publish('response', command=command, **kwargs)
-
-    def publish_stats(self, **stats):
-        checksum, message = self.encode_message(**stats)
-        self.channel.basic_publish(exchange=self.status_exchange,
-                                   routing_key='',
+    def publish_response(self, uuid, response_checksum, **kwargs):
+        checksum, message = self.encode_message(**kwargs)
+        self.channel.basic_publish(exchange='',
+                                   routing_key=self.response_queue(
+                                       uuid, response_checksum),
                                    body=message)
         return checksum
 
-    def ack_message(self, tag):
-        self.channel.basic_ack(tag)
+    def publish_stats(self, **stats):
+        logging.debug('Publish stats', extra=stats)
+        channel = self.connection.channel()
+        checksum, body = self.encode_message(**stats)
+        message = Message.create(channel,
+                                 body,
+                                 {'content_type': 'application/json'})
+        message.publish(**self.status_exchange(channel))
+        channel.close()
+        return checksum
 
-    def decode_message(self, callback, channel, method, properties, body):
-        try:
-            callback((method.delivery_tag,
-                      json.loads(body.decode('utf8'))))
-        except:
-            self.ack_message(method.delivery_tag)
+    def decode_message(self, callback, message):
+        logging.debug('Got message: %s', message.body)
 
-    def create_listener(self, kwargs, observer):
         try:
-            self.channel.basic_consume(partial(self.decode_message,
-                                               observer.on_next),
-                                       **kwargs)
-            self.channel.basic_qos(prefetch_count=1)
-            self.channel.start_consuming()
+            callback(message)
         except Exception as error:
-            self.channel.stop_consuming()
+            logging.error('Error decoding message', extra=error)
+            message.nack()
+
+    def create_listener(self, channel, kwargs, observer):
+        logging.debug('Creates listener', extra=kwargs)
+
+        try:
+            channel.basic.qos(1)
+            channel.basic.consume(partial(self.decode_message,
+                                          observer.on_next),
+                                  **kwargs)
+            channel.start_consuming()
+        except Exception as error:
+            channel.stop_consuming()
             observer.on_error(error)
 
+        logging.debug('Listener completed', extra=kwargs)
+        channel.close()
         observer.on_completed()
 
-    def get_listener(self, key):
-        return Observable.create(partial(self.create_listener,
-                                         dict(queue='clique-%s' % key))) \
-            .where(lambda m: m is not None)
-
     def get_status_listener(self):
-        return Observable.create(partial(self.create_listener,
-                                         dict(queue=self.status_queue))) \
+        logging.debug('Listens to status')
+        channel = self.connection.channel()
+        queue = self.status_queue(channel)
+        observable = Observable.create(partial(self.create_listener,
+                                               channel,
+                                               queue)) \
             .where(lambda m: m is not None) \
-            .tap(lambda r: self.ack_message(r[0]))
+            .tap(lambda m: m.ack())
+
+        return channel.stop_consuming, observable
 
     def get_command_listener(self):
         return Observable.create(partial(self.create_listener,
                                          dict(queue=self.command_queue))) \
             .where(lambda m: m is not None)
 
-    def get_response_listener(self):
-        return self.get_listener('response')
+    def get_response_listener(self, checksum):
+        return Observable.create(partial(self.create_listener,
+                                         dict(queue=self.response_queue(
+                                            self.uuid, checksum)))) \
+            .where(lambda m: m is not None)
 
     def stop_listeners(self):
         self.channel.stop_consuming()
