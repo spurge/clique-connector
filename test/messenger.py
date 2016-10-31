@@ -7,19 +7,10 @@ from functools import partial
 from unittest import TestCase
 
 from messenger import Messenger
+from util import listener_error, filter_message
 
 
 logging.basicConfig(level=logging.DEBUG)
-
-
-def error(stop, error):
-    stop()
-    raise error
-
-
-def filter_message(test_values, message):
-    body = message.json()
-    return all(body[k] == test_values[k] for k in test_values)
 
 
 def get_response(messenger, checksum, test_values, response_checksum):
@@ -32,7 +23,7 @@ def get_response(messenger, checksum, test_values, response_checksum):
         .first() \
         .timeout(3000) \
         .tap(lambda _: stop()) \
-        .catch_exception(partial(error, stop))
+        .catch_exception(partial(listener_error, stop))
 
 
 class TestMessenger(TestCase):
@@ -60,7 +51,7 @@ class TestMessenger(TestCase):
             .first()
             .timeout(3000)
             .tap(lambda _: stop())
-            .catch_exception(partial(error, stop)))
+            .catch_exception(partial(listener_error, stop)))
 
         self.assertIsInstance(status['uname'], list)
         self.assertIsInstance(status['time'], float)
@@ -85,7 +76,7 @@ class TestMessenger(TestCase):
             .first()
             .timeout(3000)
             .tap(lambda _: stop())
-            .catch_exception(partial(error, stop)))
+            .catch_exception(partial(listener_error, stop)))
 
         self.assertEqual(command['command'], 'test')
         self.assertEqual(command['arg'], 'value')
@@ -117,7 +108,7 @@ class TestMessenger(TestCase):
             .map(lambda m: m.json())
             .timeout(3000)
             .tap(lambda _: stop())
-            .catch_exception(partial(error, stop)))
+            .catch_exception(partial(listener_error, stop)))
 
         self.assertEqual(response['response'], 'value')
         self.assertEqual(response['test_checksum'], checksum)

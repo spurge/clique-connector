@@ -84,7 +84,7 @@ class Messenger:
         return checksum, json.dumps(props)
 
     def publish(self, contents, publish_args_generator):
-        logging.debug('Publish message', extra=contents)
+        logging.debug('Publish message: %s', contents)
         channel = self.connection.channel()
         checksum, body = self.encode_message(**contents)
         message = Message.create(channel,

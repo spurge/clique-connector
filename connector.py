@@ -1,63 +1,60 @@
 # -*- coding: utf-8 -*-
 
+import logging
+
+from functools import partial
 from rx import Observable
 
 from messenger import Messenger
+from util import listener_error, filter_message
 
 
 class Connector:
 
-    def __init__(self, url):
-        self.url = url
+    def __init__(self, host):
+        self.host = host
         self.__messenger = None
 
     @property
     def messenger(self):
         if self.__messenger is None:
-            self.__messenger = Messenger(self.url)
+            self.__messenger = Messenger(self.host)
 
         return self.__messenger
 
-    def create_machine(self, name, image, cpu, mem, public_key):
-        response_listener = self.messenger.get_response_listener()
+    def get_response(self, timeout, checksum):
+        stop, observable = self.messenger \
+                           .get_response_listener(checksum)
 
+        return observable \
+            .first() \
+            .tap(lambda m: m.ack()) \
+            .tap(lambda _: stop()) \
+            .catch_exception(partial(listener_error, stop))
+
+    def publish_response(self, kwargs, message):
+        body = message.json()
+
+        return self.messenger.publish_response(body['uuid'],
+                                               body['checksum'],
+                                               **kwargs)
+
+    def create_machine(self, name, image, cpu, mem, disc, pkey):
         return Observable.just(self.messenger.publish_command(
                 command='machine-requested',
                 name=name,
                 image=image,
                 cpu=cpu,
                 mem=mem,
-                pkey=public_key
+                disc=disc,
+                pkey=pkey
             )) \
-            .flat_map(
-                lambda cs:
-                    response_listener
-                    .where(lambda r: r['requested_checksum'] == cs)
-                    .first()
-                    .timeout(10000)
-                    .flat_map(
-                        lambda r:
-                            Observable.just(
-                                self.messenger.publish_command(
-                                    'machine-confirmed',
-                                    confirmed_checksum=r['checksum']
-                                )
-                            )
-                    )
-                    .flat_map(
-                        lambda cs:
-                            response_listener
-                            .where(
-                                lambda r:
-                                    r['requested_checksum'] == cs
-                            )
-                            .first()
-                            .timeout(10000)
-                    )
-                    .retry(10)
-            ) \
-            .map(lambda r: dict(host=r['host'],
-                                username=r['username']))
+            .flat_map(partial(self.get_response, 10000)) \
+            .map(partial(self.publish_response, {})) \
+            .flat_map(partial(self.get_response, 10000)) \
+            .map(lambda m: m.json()) \
+            .map(lambda m: dict(host=m['host'],
+                                username=m['username']))
 
     def stop_machine(self, name):
         pass
@@ -66,38 +63,33 @@ class Connector:
         pass
 
     def wait_for_machines(self, callback):
-        command_listener = self.messenger.get_command_listener()
+        stop, observable = self.messenger.get_command_listener()
 
-        return command_listener \
-            .where(lambda cr: cr['command'] == 'machine-requested') \
+        def handle_error(message, error):
+            logging.error('Error while listening for machines: %s',
+                          message.body,
+                          extra=error)
+            message.ack()
+
+        return stop, observable \
+            .where(partial(filter_message,
+                           dict(command='machine-requested'))) \
             .flat_map(
-                lambda cr:
-                    Observable.just(self.messenger.publish_response(
-                        'machine-requested',
-                        requested_checksum=cr['checksum']
-                    ))
-                    .flat_map(
-                        lambda cs:
-                            command_listener
-                            .where(
-                                lambda cc:
-                                    cc['confirmed_checksum'] == cs
-                            )
-                            .first()
-                            .map(
-                                lambda cc:
-                                    self.messenger.publish_response(
-                                        'machine-confirmed',
-                                        requested_checksum=cc['checksum'],
-                                        **(callback(
-                                            cr['name'],
-                                            cr['cpu'],
-                                            cr['mem']
-                                        ))
-                                    )
-                            )
-                    )
-            )
+                lambda cm:
+                    Observable.just(self.publish_response({}, cm))
+                    .flat_map(partial(self.get_response, 1000))
+                    .map(lambda _: callback(stop,
+                                            cm['name'],
+                                            cm['image'],
+                                            cm['cpu'],
+                                            cm['mem'],
+                                            cm['disc'],
+                                            cm['pkey']))
+                    .map(lambda vm: self.publish_response(vm, cm))
+                    .tap(lambda _: cm.ack())
+                    .catch_exception(partial(handle_error, cm))
+            ) \
+            .catch_exception(partial(listener_error, stop))
 
     def listen_for_stats(self):
         pass
