@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 
 import asyncio
-import json
 import logging
 
 from functools import partial
@@ -16,6 +15,24 @@ logging.basicConfig(level=logging.DEBUG)
 def error(stop, error):
     stop()
     raise error
+
+
+def filter_message(test_values, message):
+    body = message.json()
+    return all(body[k] == test_values[k] for k in test_values)
+
+
+def get_response(messenger, checksum, test_values, response_checksum):
+    stop, observable = messenger.get_response_listener(checksum)
+
+    return observable \
+        .where(partial(filter_message,
+                       dict(checksum=response_checksum, **test_values))) \
+        .tap(lambda m: m.ack()) \
+        .first() \
+        .timeout(3000) \
+        .tap(lambda _: stop()) \
+        .catch_exception(partial(error, stop))
 
 
 class TestMessenger(TestCase):
@@ -35,7 +52,8 @@ class TestMessenger(TestCase):
 
         status = loop.run_until_complete(
             observable
-            .map(lambda m: json.loads(m.body))
+            .tap(lambda m: m.ack())
+            .map(lambda m: m.json())
             .where(
                 lambda m:
                     m['uuid'] == messenger.uuid)
@@ -50,25 +68,24 @@ class TestMessenger(TestCase):
         self.assertEqual(status['uuid'], messenger.uuid)
 
     def test_command(self):
+        stop, observable = self.messenger.get_command_listener()
         checksum = self.messenger.publish_command('test',
                                                   arg='value')
         loop = asyncio.get_event_loop()
 
-        tag, command = loop.run_until_complete(
-            self.messenger
-                .get_command_listener()
-                .where(
-                    lambda c:
-                        c[1]['command'] == 'test' and
-                        c[1]['checksum'] == checksum
-                    )
-                .tap(lambda c: c[2]())
-                .timeout(3000)
-                .catch_exception(partial(error, self.messenger))
-        )
-
-        self.assertIsInstance(tag, int)
-        self.messenger.ack_message(tag)
+        command = loop.run_until_complete(
+            observable
+            .tap(lambda m: m.ack())
+            .map(lambda m: m.json())
+            .where(
+                lambda m:
+                    m['command'] == 'test' and
+                    m['checksum'] == checksum
+                )
+            .first()
+            .timeout(3000)
+            .tap(lambda _: stop())
+            .catch_exception(partial(error, stop)))
 
         self.assertEqual(command['command'], 'test')
         self.assertEqual(command['arg'], 'value')
@@ -76,41 +93,33 @@ class TestMessenger(TestCase):
         self.assertIsInstance(command['time'], float)
 
     def test_response(self):
+        stop, observable = self.messenger.get_command_listener()
         checksum = self.messenger.publish_command('test',
                                                   arg='value')
         loop = asyncio.get_event_loop()
 
-        tag, response = loop.run_until_complete(
-            self.messenger
-                .get_command_listener()
-                .where(
-                    lambda c:
-                        c[1]['command'] == 'test' and
-                        c[1]['checksum'] == checksum
-                    )
-                .tap(print)
-                .map(
-                    lambda c:
-                        self.messenger.publish_response(
-                            c[1]['uuid'],
-                            c[1]['checksum'],
-                            response='value',
-                            test_checksum=checksum
-                        )
-                    )
-                .tap(print)
-                .flat_map(
-                    lambda cs:
-                        self.messenger.get_response_listener(checksum)
-                            .tap(print)
-                            .where(
-                                lambda r:
-                                    r[1]['test_checksum'] == checksum
-                            )
-                    )
-                .tap(partial(stop, self.messenger))
-                .timeout(3000)
-                .catch_exception(partial(error, self.messenger))
-        )
+        response = loop.run_until_complete(
+            observable
+            .tap(lambda m: m.ack())
+            .where(partial(filter_message, dict(checksum=checksum)))
+            .first()
+            .map(
+                lambda m:
+                    self.messenger.publish_response(
+                        m.json()['uuid'],
+                        m.json()['checksum'],
+                        response='value',
+                        test_checksum=checksum))
+            .flat_map(partial(get_response,
+                              self.messenger,
+                              checksum,
+                              dict(test_checksum=checksum)))
+            .map(lambda m: m.json())
+            .timeout(3000)
+            .tap(lambda _: stop())
+            .catch_exception(partial(error, stop)))
 
-        print(response)
+        self.assertEqual(response['response'], 'value')
+        self.assertEqual(response['test_checksum'], checksum)
+        self.assertEqual(response['uuid'], self.messenger.uuid)
+        self.assertIsInstance(response['time'], float)

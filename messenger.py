@@ -9,7 +9,6 @@ from functools import partial
 from hashlib import md5
 from os import uname
 from rx import Observable
-from rx.concurrency import AsyncIOScheduler
 from time import time
 from uuid import uuid1
 
@@ -44,17 +43,9 @@ class Messenger:
 
         return self.__connection
 
-    @property
-    def channel(self):
-        if self.__channel is None:
-            self.__channel = self.connection.channel()
-
-        return self.__channel
-
-    @property
-    def command_queue(self):
-        self.channel.queue_declare(queue=self.COMMAND_QUEUE_NAME)
-        return self.COMMAND_QUEUE_NAME
+    def command_queue(self, channel):
+        channel.queue.declare(self.COMMAND_QUEUE_NAME)
+        return dict(routing_key=self.COMMAND_QUEUE_NAME)
 
     def status_exchange(self, channel):
         logging.debug('Declaring status exchange: %s',
@@ -73,17 +64,16 @@ class Messenger:
                            **(self.status_exchange(channel)))
         return dict(queue=name)
 
-    def response_queue(self, uuid, checksum):
-        queue = self.RESPONSE_QUEUE_NAME % (uuid, checksum)
+    def response_queue(self, uuid, checksum, channel):
+        name = self.RESPONSE_QUEUE_NAME % (uuid, checksum)
+        logging.debug('Declaring response queue: %s', name)
 
         if self.uuid == uuid:
-            self.channel.queue_declare(
-                queue=queue,
-                exclusive=True)
+            channel.queue.declare(name, exclusive=True)
         else:
-            self.channel.queue_declare(queue=queue)
+            channel.queue.declare(name)
 
-        return queue
+        return dict(routing_key=name)
 
     def encode_message(self, **kwargs):
         props = dict(uuid=self.uuid,
@@ -93,34 +83,31 @@ class Messenger:
         props['checksum'] = checksum
         return checksum, json.dumps(props)
 
+    def publish(self, contents, publish_args_generator):
+        logging.debug('Publish message', extra=contents)
+        channel = self.connection.channel()
+        checksum, body = self.encode_message(**contents)
+        message = Message.create(channel,
+                                 body,
+                                 {'content_type': 'application/json'})
+        message.publish(**publish_args_generator(channel))
+        channel.close()
+        return checksum
+
     def publish_online(self):
         return self.publish_stats(uname=uname())
 
     def publish_command(self, command, **kwargs):
-        checksum, message = self.encode_message(command=command, **kwargs)
-        self.channel.basic_publish(exchange='',
-                                   routing_key=self.command_queue,
-                                   body=message)
-        return checksum
+        return self.publish(dict(command=command, **kwargs),
+                            self.command_queue)
 
-    def publish_response(self, uuid, response_checksum, **kwargs):
-        checksum, message = self.encode_message(**kwargs)
-        self.channel.basic_publish(exchange='',
-                                   routing_key=self.response_queue(
-                                       uuid, response_checksum),
-                                   body=message)
-        return checksum
+    def publish_response(self, uuid, checksum, **kwargs):
+        return self.publish(kwargs, partial(self.response_queue,
+                                            uuid,
+                                            checksum))
 
     def publish_stats(self, **stats):
-        logging.debug('Publish stats', extra=stats)
-        channel = self.connection.channel()
-        checksum, body = self.encode_message(**stats)
-        message = Message.create(channel,
-                                 body,
-                                 {'content_type': 'application/json'})
-        message.publish(**self.status_exchange(channel))
-        channel.close()
-        return checksum
+        return self.publish(stats, self.status_exchange)
 
     def decode_message(self, callback, message):
         logging.debug('Got message: %s', message.body)
@@ -148,28 +135,29 @@ class Messenger:
         channel.close()
         observer.on_completed()
 
-    def get_status_listener(self):
-        logging.debug('Listens to status')
+    def get_listener(self, listen_args_generator):
         channel = self.connection.channel()
-        queue = self.status_queue(channel)
+        queue = listen_args_generator(channel)
+
+        if 'routing_key' in queue:
+            queue = dict(queue=queue['routing_key'])
+
         observable = Observable.create(partial(self.create_listener,
                                                channel,
-                                               queue)) \
-            .where(lambda m: m is not None) \
-            .tap(lambda m: m.ack())
+                                               queue))
 
         return channel.stop_consuming, observable
 
+    def get_status_listener(self):
+        logging.debug('Listens to status')
+        return self.get_listener(self.status_queue)
+
     def get_command_listener(self):
-        return Observable.create(partial(self.create_listener,
-                                         dict(queue=self.command_queue))) \
-            .where(lambda m: m is not None)
+        logging.debug('Listens to commands')
+        return self.get_listener(self.command_queue)
 
     def get_response_listener(self, checksum):
-        return Observable.create(partial(self.create_listener,
-                                         dict(queue=self.response_queue(
-                                            self.uuid, checksum)))) \
-            .where(lambda m: m is not None)
-
-    def stop_listeners(self):
-        self.channel.stop_consuming()
+        logging.debug('Listens to responses for %s', checksum)
+        return self.get_listener(partial(self.response_queue,
+                                         self.uuid,
+                                         checksum))
