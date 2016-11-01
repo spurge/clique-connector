@@ -10,7 +10,8 @@ from messenger import Messenger
 from util import listener_error, filter_message
 
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG,
+                    format='(%(threadName)-10s) %(message)s')
 
 
 def get_response(messenger, checksum, test_values, response_checksum):
@@ -49,8 +50,8 @@ class TestMessenger(TestCase):
                 lambda m:
                     m['uuid'] == messenger.uuid)
             .first()
-            .timeout(3000)
             .tap(lambda _: stop())
+            .timeout(3000)
             .catch_exception(partial(listener_error, stop)))
 
         self.assertIsInstance(status['uname'], list)

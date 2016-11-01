@@ -30,6 +30,7 @@ class Connector:
             .first() \
             .tap(lambda m: m.ack()) \
             .tap(lambda _: stop()) \
+            .timeout(timeout) \
             .catch_exception(partial(listener_error, stop))
 
     def publish_response(self, kwargs, message):
@@ -49,12 +50,19 @@ class Connector:
                 disc=disc,
                 pkey=pkey
             )) \
-            .flat_map(partial(self.get_response, 10000)) \
+            .tap(lambda cs: logging.debug('Machine requested: %s',
+                                          cs)) \
+            .flat_map(partial(self.get_response, 5000)) \
+            .tap(lambda m: logging.debug('Machine confirmed %s',
+                                         m.body)) \
             .map(partial(self.publish_response, {})) \
-            .flat_map(partial(self.get_response, 10000)) \
+            .flat_map(partial(self.get_response, 5000)) \
             .map(lambda m: m.json()) \
+            .tap(partial(logging.debug, 'Machine response: %s')) \
             .map(lambda m: dict(host=m['host'],
-                                username=m['username']))
+                                username=m['username'])) \
+            .first() \
+            .retry(10)
 
     def stop_machine(self, name):
         pass
@@ -66,28 +74,42 @@ class Connector:
         stop, observable = self.messenger.get_command_listener()
 
         def handle_error(message, error):
-            logging.error('Error while listening for machines: %s',
-                          message.body,
-                          extra=error)
+            logging.error(
+                'Error while listening for machines: %s',
+                error)
             message.ack()
+            return Observable.just(None)
 
         return stop, observable \
             .where(partial(filter_message,
                            dict(command='machine-requested'))) \
+            .tap(lambda m: logging.debug('Machine requested: %s',
+                                         m.body)) \
             .flat_map(
                 lambda cm:
                     Observable.just(self.publish_response({}, cm))
                     .flat_map(partial(self.get_response, 1000))
-                    .map(lambda _: callback(stop,
-                                            cm['name'],
-                                            cm['image'],
-                                            cm['cpu'],
-                                            cm['mem'],
-                                            cm['disc'],
-                                            cm['pkey']))
-                    .map(lambda vm: self.publish_response(vm, cm))
+                    .tap(
+                        lambda m:
+                            logging.debug('Machine confirmed: %s',
+                                          m.body))
+                    .map(lambda m: (cm.json(), m))
+                    .map(lambda cm_m: (callback(stop,
+                                                cm_m[0]['name'],
+                                                cm_m[0]['image'],
+                                                cm_m[0]['cpu'],
+                                                cm_m[0]['mem'],
+                                                cm_m[0]['disc'],
+                                                cm_m[0]['pkey']),
+                                       cm_m[1]))
+                    .tap(
+                        lambda vm_m:
+                        logging.debug('Responding with machine: %s',
+                                      vm_m[0]))
+                    .map(lambda vm_m: self.publish_response(*vm_m))
                     .tap(lambda _: cm.ack())
                     .catch_exception(partial(handle_error, cm))
+                    .where(lambda m: m is not None)
             ) \
             .catch_exception(partial(listener_error, stop))
 

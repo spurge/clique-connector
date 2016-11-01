@@ -9,6 +9,7 @@ from functools import partial
 from hashlib import md5
 from os import uname
 from rx import Observable
+from rx.concurrency import AsyncIOScheduler
 from time import time
 from uuid import uuid1
 
@@ -68,10 +69,7 @@ class Messenger:
         name = self.RESPONSE_QUEUE_NAME % (uuid, checksum)
         logging.debug('Declaring response queue: %s', name)
 
-        if self.uuid == uuid:
-            channel.queue.declare(name, exclusive=True)
-        else:
-            channel.queue.declare(name)
+        channel.queue.declare(name)
 
         return dict(routing_key=name)
 
@@ -84,9 +82,9 @@ class Messenger:
         return checksum, json.dumps(props)
 
     def publish(self, contents, publish_args_generator):
-        logging.debug('Publish message: %s', contents)
         channel = self.connection.channel()
         checksum, body = self.encode_message(**contents)
+        logging.debug('Publish message: %s', body)
         message = Message.create(channel,
                                  body,
                                  {'content_type': 'application/json'})
@@ -118,35 +116,22 @@ class Messenger:
             logging.error('Error decoding message', extra=error)
             message.nack()
 
-    def create_listener(self, channel, kwargs, observer):
-        logging.debug('Creates listener', extra=kwargs)
-
-        try:
-            channel.basic.qos(1)
-            channel.basic.consume(partial(self.decode_message,
-                                          observer.on_next),
-                                  **kwargs)
-            channel.start_consuming()
-        except Exception as error:
-            channel.stop_consuming()
-            observer.on_error(error)
-
-        logging.debug('Listener completed', extra=kwargs)
-        channel.close()
-        observer.on_completed()
-
     def get_listener(self, listen_args_generator):
         channel = self.connection.channel()
         queue = listen_args_generator(channel)
 
+        channel.basic.qos(1)
+
         if 'routing_key' in queue:
             queue = dict(queue=queue['routing_key'])
 
-        observable = Observable.create(partial(self.create_listener,
-                                               channel,
-                                               queue))
+        observable = Observable.interval(100,
+                                         scheduler=AsyncIOScheduler()) \
+            .map(lambda _: channel.basic.get(**queue)) \
+            .where(lambda m: m is not None) \
+            .tap(lambda m: logging.debug('Got message %s', m.body))
 
-        return channel.stop_consuming, observable
+        return channel.close, observable
 
     def get_status_listener(self):
         logging.debug('Listens to status')

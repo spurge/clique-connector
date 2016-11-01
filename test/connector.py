@@ -6,7 +6,7 @@ import logging
 from functools import partial
 from rx import Observable
 from unittest import TestCase
-from unittest.mock import patch, Mock
+from unittest.mock import Mock
 
 from connector import Connector
 from util import listener_error
@@ -25,8 +25,6 @@ class TestConnector(TestCase):
 
     def test_create_machine(self):
         def callback(stop, name, image, cpu, mem, disc, pkey):
-            stop()
-
             return dict(host='testhost',
                         username='testuser')
 
@@ -44,26 +42,26 @@ class TestConnector(TestCase):
             ),
             observable
             .first()
+            .tap(lambda _: stop())
             .catch_exception(partial(listener_error, stop))
         ]))
 
-        (create,) = (r.result() for r in result if 'host' in r.result())
+        created = [r.result() for r in result
+                   if type(r.result()) is dict][0]
 
-        self.assertEqual(create['host'], 'testhost')
-        self.assertEqual(create['username'], 'testuser')
+        self.assertEqual(created['host'], 'testhost')
+        self.assertEqual(created['username'], 'testuser')
 
-    @patch('messenger.Messenger.fetch')
-    @patch('messenger.Messenger.publish')
-    def test_raceconditioned_create_machine(self, publish, fetch):
-        messenger = MessengerMock(self.connector.messenger)
-        messenger.publish(publish)
-        messenger.fetch(fetch)
-
-        def callback(name, cpu, mem):
+    def test_raceconditioned_create_machine(self):
+        def callback(stop, name, image, cpu, mem, disc, pkey):
             return dict(host='testhost',
                         username='testuser')
 
         loop = asyncio.get_event_loop()
+        connector_1 = Connector('127.0.0.1')
+        stop_1, observable_1 = connector_1.wait_for_machines(callback)
+        connector_2 = Connector('127.0.0.1')
+        stop_2, observable_2 = connector_2.wait_for_machines(callback)
 
         result, _ = loop.run_until_complete(asyncio.wait([
             self.connector.create_machine(
@@ -71,16 +69,20 @@ class TestConnector(TestCase):
                 'alpine',
                 1,
                 512,
+                128,
                 'public-key'
-            )
-            .timeout(5000),
-            self.connector.wait_for_machines(callback)
+            ),
+            observable_1
             .first()
+            .tap(lambda _: stop_1())
             .timeout(5000)
+            .catch_exception(partial(listener_error, stop_1))
             .catch_exception(lambda _: Observable.just('failed')),
-            self.connector.wait_for_machines(callback)
+            observable_2
             .first()
+            .tap(lambda _: stop_2())
             .timeout(5000)
+            .catch_exception(partial(listener_error, stop_2))
             .catch_exception(lambda _: Observable.just('failed'))
         ]))
 
@@ -89,20 +91,25 @@ class TestConnector(TestCase):
                   if r.result() == 'failed']
         self.assertEqual(len(failed), 1)
 
+        created = [r.result() for r in result
+                   if type(r.result()) is dict][0]
+
+        self.assertEqual(created['host'], 'testhost')
+        self.assertEqual(created['username'], 'testuser')
+
     def test_failing_listener_with_fallback(self):
-        def callback_ok(name, cpu, mem):
+        def callback_ok(stop, name, image, cpu, mem, disc, pkey):
             return dict(host='testhost',
                         username='testuser')
 
-        def callback_fail(name, cpu, mem):
+        def callback_fail(stop, name, image, cpu, mem, disc, pkey):
             return dict(test='ok')
 
-        callback = Mock(side_effect=[callback_fail, callback_ok])
-
         loop = asyncio.get_event_loop()
-
-        connector1 = Connector('amqp://localhost')
-        connector2 = Connector('amqp://localhost')
+        connector_1 = Connector('127.0.0.1')
+        stop_1, observable_1 = connector_1.wait_for_machines(callback_ok)
+        connector_2 = Connector('127.0.0.1')
+        stop_2, observable_2 = connector_2.wait_for_machines(callback_fail)
 
         result, _ = loop.run_until_complete(asyncio.wait([
             self.connector.create_machine(
@@ -110,15 +117,30 @@ class TestConnector(TestCase):
                 'alpine',
                 1,
                 512,
+                128,
                 'public-key'
-            )
-            .timeout(10000),
-            connector1.wait_for_machines(callback)
+            ),
+            observable_1
             .first()
-            .timeout(10000),
-            connector2.wait_for_machines(callback)
-            .first()
+            .tap(lambda _: stop_1())
             .timeout(10000)
+            .catch_exception(partial(listener_error, stop_1))
+            .catch_exception(lambda _: Observable.just('failed')),
+            observable_2
+            .first()
+            .tap(lambda _: stop_2())
+            .timeout(10000)
+            .catch_exception(partial(listener_error, stop_2))
+            .catch_exception(lambda _: Observable.just('failed'))
         ]))
 
-        print(result)
+        failed = [r.result()
+                  for r in result
+                  if r.result() == 'failed']
+        self.assertEqual(len(failed), 1)
+
+        created = [r.result() for r in result
+                   if type(r.result()) is dict][0]
+
+        self.assertEqual(created['host'], 'testhost')
+        self.assertEqual(created['username'], 'testuser')
