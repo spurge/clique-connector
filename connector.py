@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
 
+"""
+Copyright (c) 2016 Olof Montin <olof@montin.net>
+
+This file is part of clique-connector.
+"""
+
 import logging
 
 from functools import partial
@@ -11,6 +17,35 @@ from util import listener_error, filter_message
 
 
 class Connector:
+    """Wraps the Messenger and extends it's listener observables for
+    creating the logistics of creating and responding with virtual
+    machines.
+
+    Use like so:
+        connector = Connector('127.0.0.1')
+
+        # Request a virtual machine
+        machine = await connector.create_machine(
+            'some-random-machine', # Machine name
+            'ubuntu-16.04', # Image name
+            1, # CPU
+            512, # Memory in MB
+            128, # Disc in GB
+            'your-public-ssh-key-as-string') # Public SSH key
+
+        # Response with a virtual machine
+        def callback(channel_close, name, cpu, mem, disc, pkey):
+            return dict(host='127.0.0.1',
+                        username='root')
+
+        # Create listener
+        channel_close, observable = connector.wait_for_machines(callback)
+
+        # Start listening
+        machines = await observable \
+            .take(3) \ # Create only three machines
+            .last(lambda _: channel_close())
+    """
 
     def __init__(self, host):
         self.host = host
