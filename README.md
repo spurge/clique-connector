@@ -21,7 +21,7 @@ How to test
 -----------
 
 * Setup a RabbitMQ, preferably a docker container: `docker run --name rabbitmq -p 25672:25672 -p 4369:4369 -p 5671-5672:5671-5672 rabbitmq`
-Then run all the tests: `python -m unittest test/**/*.py`
+* Then run all the tests: `python -m unittest test/**/*.py`
 
 How to use
 ----------
