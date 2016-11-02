@@ -98,18 +98,17 @@ class TestConnector(TestCase):
         self.assertEqual(created['username'], 'testuser')
 
     def test_failing_listener_with_fallback(self):
-        def callback_ok(stop, name, image, cpu, mem, disc, pkey):
-            return dict(host='testhost',
-                        username='testuser')
-
-        def callback_fail(stop, name, image, cpu, mem, disc, pkey):
-            return dict(test='ok')
-
+        callback = Mock(side_effect=[dict(failing=True),
+                                     Exception('Oups'),
+                                     dict(host='testhost',
+                                          username='testuser')])
         loop = asyncio.get_event_loop()
+
         connector_1 = Connector('127.0.0.1')
-        stop_1, observable_1 = connector_1.wait_for_machines(callback_ok)
+        stop_1, observable_1 = connector_1.wait_for_machines(callback)
+
         connector_2 = Connector('127.0.0.1')
-        stop_2, observable_2 = connector_2.wait_for_machines(callback_fail)
+        stop_2, observable_2 = connector_2.wait_for_machines(callback)
 
         result, _ = loop.run_until_complete(asyncio.wait([
             self.connector.create_machine(
@@ -123,13 +122,13 @@ class TestConnector(TestCase):
             observable_1
             .first()
             .tap(lambda _: stop_1())
-            .timeout(10000)
+            .timeout(20000)
             .catch_exception(partial(listener_error, stop_1))
             .catch_exception(lambda _: Observable.just('failed')),
             observable_2
-            .first()
+            .take(2)
             .tap(lambda _: stop_2())
-            .timeout(10000)
+            .timeout(20000)
             .catch_exception(partial(listener_error, stop_2))
             .catch_exception(lambda _: Observable.just('failed'))
         ]))

@@ -10,8 +10,7 @@ from messenger import Messenger
 from util import listener_error, filter_message
 
 
-logging.basicConfig(level=logging.DEBUG,
-                    format='(%(threadName)-10s) %(message)s')
+logging.basicConfig(level=logging.DEBUG)
 
 
 def get_response(messenger, checksum, test_values, response_checksum):
@@ -19,7 +18,8 @@ def get_response(messenger, checksum, test_values, response_checksum):
 
     return observable \
         .where(partial(filter_message,
-                       dict(checksum=response_checksum, **test_values))) \
+                       dict(checksum=response_checksum,
+                            **test_values))) \
         .tap(lambda m: m.ack()) \
         .first() \
         .timeout(3000) \

@@ -4,6 +4,7 @@ import logging
 
 from functools import partial
 from rx import Observable
+from rx.concurrency import AsyncIOScheduler
 
 from messenger import Messenger
 from util import listener_error, filter_message
@@ -40,16 +41,29 @@ class Connector:
                                                body['checksum'],
                                                **kwargs)
 
-    def create_machine(self, name, image, cpu, mem, disc, pkey):
-        return Observable.just(self.messenger.publish_command(
+    def create_machine(self, name, image, cpu,
+                       mem, disc, pkey, retries=0,
+                       scheduler=AsyncIOScheduler()):
+        def retry(error):
+            if retries < 10:
+                logging.warning('Retrying request machine: %d/10',
+                                retries + 1)
+
+                return self.create_machine(
+                    name, image, cpu, mem, disc, pkey, retries + 1,
+                    scheduler)
+
+            raise error
+
+        return Observable.start(partial(
+                self.messenger.publish_command,
                 command='machine-requested',
                 name=name,
                 image=image,
                 cpu=cpu,
                 mem=mem,
                 disc=disc,
-                pkey=pkey
-            )) \
+                pkey=pkey), scheduler=scheduler) \
             .tap(lambda cs: logging.debug('Machine requested: %s',
                                           cs)) \
             .flat_map(partial(self.get_response, 5000)) \
@@ -61,8 +75,8 @@ class Connector:
             .tap(partial(logging.debug, 'Machine response: %s')) \
             .map(lambda m: dict(host=m['host'],
                                 username=m['username'])) \
-            .first() \
-            .retry(10)
+            .catch_exception(retry) \
+            .first()
 
     def stop_machine(self, name):
         pass
