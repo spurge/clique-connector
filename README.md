@@ -50,6 +50,8 @@ channel_close, observable = connector.wait_for_machines(callback)
 
 # Start listening
 machines = await observable \
-    .take(3) \ # Create only three machines
-    .last(lambda _: channel_close())
+    .take(3) # Create only three machines
+
+# Clean up by closing channel
+channel_close()
 ```

@@ -43,8 +43,10 @@ class Connector:
 
         # Start listening
         machines = await observable \
-            .take(3) \ # Create only three machines
-            .last(lambda _: channel_close())
+            .take(3) # Create only three machines
+
+        # Clean up by closing channel
+        channel_close()
     """
 
     def __init__(self, host):
@@ -53,14 +55,22 @@ class Connector:
 
     @property
     def messenger(self):
+        """Sets and returns a messenger instance
+        """
+
         if self.__messenger is None:
             self.__messenger = Messenger(self.host)
 
         return self.__messenger
 
     def get_response(self, timeout, checksum):
+        """Creates a listener for a single response by provided checksum.
+        The timeout sets how long the listener should wait.
+        Returns the first response message.
+        """
+
         stop, observable = self.messenger \
-                           .get_response_listener(checksum)
+                               .get_response_listener(checksum)
 
         return observable \
             .first() \
@@ -70,6 +80,9 @@ class Connector:
             .catch_exception(partial(listener_error, stop))
 
     def publish_response(self, kwargs, message):
+        """Publish a response and returns with the message checksum.
+        """
+
         body = message.json()
 
         return self.messenger.publish_response(body['uuid'],
@@ -79,7 +92,19 @@ class Connector:
     def create_machine(self, name, image, cpu,
                        mem, disc, pkey, retries=0,
                        scheduler=AsyncIOScheduler()):
+        """Creates a create-machine request and listens for a response.
+        Returns with an observable which generates a single value with
+        the virtual machine. The machine response is a dict:
+            { 'host': '127.0.0.1',
+              'username': 'root' }
+        """
+
         def retry(error):
+            """The built-in retry in ReactiveX whouldn't do it,
+            so I hade write this in order to retry the while observable
+            chain.
+            """
+
             if retries < 10:
                 logging.warning('Retrying request machine: %d/10',
                                 retries + 1)
@@ -101,15 +126,25 @@ class Connector:
                 pkey=pkey), scheduler=scheduler) \
             .tap(lambda cs: logging.debug('Machine requested: %s',
                                           cs)) \
-            .flat_map(partial(self.get_response, 5000)) \
+            .flat_map(
+                # Wait for the first response for machine-request
+                # command.
+                partial(self.get_response, 5000)) \
             .tap(lambda m: logging.debug('Machine confirmed %s',
                                          m.body)) \
-            .map(partial(self.publish_response, {})) \
-            .flat_map(partial(self.get_response, 5000)) \
+            .map(
+                # Confirm the response and make the agent actually
+                # create the virtual machine.
+                partial(self.publish_response, {})) \
+            .flat_map(
+                # Wait for the machine...
+                partial(self.get_response, 5000)) \
             .map(lambda m: m.json()) \
             .tap(partial(logging.debug, 'Machine response: %s')) \
-            .map(lambda m: dict(host=m['host'],
-                                username=m['username'])) \
+            .map(
+                # Map the machine message for something useful.
+                lambda m: dict(host=m['host'],
+                               username=m['username'])) \
             .catch_exception(retry) \
             .first()
 
