@@ -12,8 +12,8 @@ from functools import partial
 from rx import Observable
 from rx.concurrency import AsyncIOScheduler
 
-from messenger import Messenger
-from util import listener_error, filter_message
+from .messenger import Messenger
+from .util import listener_error, filter_message
 
 
 class Connector:

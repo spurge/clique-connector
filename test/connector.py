@@ -8,8 +8,8 @@ from rx import Observable
 from unittest import TestCase
 from unittest.mock import Mock
 
-from connector import Connector
-from util import listener_error
+from clique_connector import Connector
+from clique_connector.util import listener_error
 
 
 logging.basicConfig(level=logging.DEBUG)

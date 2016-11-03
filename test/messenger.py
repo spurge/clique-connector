@@ -6,8 +6,8 @@ import logging
 from functools import partial
 from unittest import TestCase
 
-from messenger import Messenger
-from util import listener_error, filter_message
+from clique_connector import Messenger
+from clique_connector.util import listener_error, filter_message
 
 
 logging.basicConfig(level=logging.DEBUG)
