@@ -6,6 +6,12 @@ Library that wraps a RabbitMQ connection and creates a channel between Clique ag
 Install
 -------
 
+### Locally
+
+`python setup.py install`
+
+### Using [Curdling](https://github.com/clarete/curdling)
+
 `curd install git+git@bitbucket.org:bagis/clique-connector.git`
 
 Features
@@ -21,7 +27,7 @@ How to test
 -----------
 
 * Setup a RabbitMQ, preferably a docker container: `docker run --name rabbitmq -p 25672:25672 -p 4369:4369 -p 5671-5672:5671-5672 rabbitmq`
-* Then run all the tests: `python -m unittest test/**/*.py`
+* Then run all the tests: `python setup.py test`
 
 How to use
 ----------
