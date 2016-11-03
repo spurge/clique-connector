@@ -155,9 +155,20 @@ class Connector:
         pass
 
     def wait_for_machines(self, callback):
+        """Creates a command listener for incoming machine requests.
+        The callback is used to create the actual virtual machine.
+        Returns a channel close function and the listener observable.
+        """
+
         stop, observable = self.messenger.get_command_listener()
 
         def handle_error(message, error):
+            """If by any reason the communication between the listener
+            (agent) and the requester (api) whould brake, this error
+            catcher will just acknowledge the message and continue
+            listening.
+            """
+
             logging.error(
                 'Error while listening for machines: %s',
                 error)
@@ -170,14 +181,18 @@ class Connector:
             .tap(lambda m: logging.debug('Machine requested: %s',
                                          m.body)) \
             .flat_map(
+                # Incoming machine request
                 lambda cm:
+                    # Response with your availability
                     Observable.just(self.publish_response({}, cm))
+                    # Listens for a confirm
                     .flat_map(partial(self.get_response, 1000))
                     .tap(
                         lambda m:
                             logging.debug('Machine confirmed: %s',
                                           m.body))
                     .map(lambda m: (cm.json(), m))
+                    # Create the actual machine
                     .map(lambda cm_m: (callback(stop,
                                                 cm_m[0]['name'],
                                                 cm_m[0]['image'],
@@ -190,6 +205,7 @@ class Connector:
                         lambda vm_m:
                         logging.debug('Responding with machine: %s',
                                       vm_m[0]))
+                    # Respond with the machine
                     .map(lambda vm_m: self.publish_response(*vm_m))
                     .tap(lambda _: cm.ack())
                     .catch_exception(partial(handle_error, cm))
