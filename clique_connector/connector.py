@@ -63,14 +63,15 @@ class Connector:
 
         return self.__messenger
 
-    def get_response(self, timeout, checksum):
+    def get_response(self, timeout, scheduler, checksum):
         """Creates a listener for a single response by provided checksum.
         The timeout sets how long the listener should wait.
         Returns the first response message.
         """
 
         stop, observable = self.messenger \
-                               .get_response_listener(checksum)
+                               .get_response_listener(checksum,
+                                                      scheduler)
 
         return observable \
             .first() \
@@ -129,7 +130,7 @@ class Connector:
             .flat_map(
                 # Wait for the first response for machine-request
                 # command.
-                partial(self.get_response, 5000)) \
+                partial(self.get_response, 5000, scheduler)) \
             .tap(lambda m: logging.debug('Machine confirmed %s',
                                          m.body)) \
             .map(
@@ -138,7 +139,7 @@ class Connector:
                 partial(self.publish_response, {})) \
             .flat_map(
                 # Wait for the machine...
-                partial(self.get_response, 5000)) \
+                partial(self.get_response, 5000, scheduler)) \
             .map(lambda m: m.json()) \
             .tap(partial(logging.debug, 'Machine response: %s')) \
             .map(
@@ -154,13 +155,13 @@ class Connector:
     def send_stats(self):
         pass
 
-    def wait_for_machines(self, callback):
+    def wait_for_machines(self, callback, scheduler=AsyncIOScheduler()):
         """Creates a command listener for incoming machine requests.
         The callback is used to create the actual virtual machine.
         Returns a channel close function and the listener observable.
         """
 
-        stop, observable = self.messenger.get_command_listener()
+        stop, observable = self.messenger.get_command_listener(scheduler)
 
         def handle_error(message, error):
             """If by any reason the communication between the listener
@@ -186,7 +187,9 @@ class Connector:
                     # Response with your availability
                     Observable.just(self.publish_response({}, cm))
                     # Listens for a confirm
-                    .flat_map(partial(self.get_response, 1000))
+                    .flat_map(partial(self.get_response,
+                                      1000,
+                                      scheduler))
                     .tap(
                         lambda m:
                             logging.debug('Machine confirmed: %s',

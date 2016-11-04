@@ -228,7 +228,8 @@ class Messenger:
 
         return self.publish(stats, self.status_exchange)
 
-    def get_listener(self, listen_args_generator):
+    def get_listener(self, listen_args_generator,
+                     scheduler=AsyncIOScheduler()):
         """Get a listener as an observable that fetches messages
         by interval by provided queue argument generator callback.
         Creates a new channel for this purpose.
@@ -250,30 +251,31 @@ class Messenger:
         # It has to be an interval for the non-blocking purpose.
         # The asyncio scheduler is necessary for the awaitables.
         observable = Observable.interval(self.LISTENER_INTERVAL,
-                                         scheduler=AsyncIOScheduler()) \
+                                         scheduler=scheduler) \
             .map(lambda _: channel.basic.get(**queue)) \
             .where(lambda m: m is not None) \
             .tap(lambda m: logging.debug('Got message %s', m.body))
 
         return channel.close, observable
 
-    def get_status_listener(self):
+    def get_status_listener(self, scheduler=AsyncIOScheduler()):
         """Gets a status exchange listener and returns the channel's
         close function and an observable.
         """
 
         logging.debug('Listens to status')
-        return self.get_listener(self.status_queue)
+        return self.get_listener(self.status_queue, scheduler)
 
-    def get_command_listener(self):
+    def get_command_listener(self, scheduler=AsyncIOScheduler()):
         """Gets a command queue listener and returns the channel's
         close function and an observable.
         """
 
         logging.debug('Listens to commands')
-        return self.get_listener(self.command_queue)
+        return self.get_listener(self.command_queue, scheduler)
 
-    def get_response_listener(self, checksum):
+    def get_response_listener(self, checksum,
+                              scheduler=AsyncIOScheduler()):
         """Gets a response queue listener based on this messenger's uuid
         and provided checksum.
         Returns the channel's close function and an observable.
@@ -282,4 +284,5 @@ class Messenger:
         logging.debug('Listens to responses for %s', checksum)
         return self.get_listener(partial(self.response_queue,
                                          self.uuid,
-                                         checksum))
+                                         checksum),
+                                 scheduler)
