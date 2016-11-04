@@ -155,13 +155,20 @@ class Connector:
     def send_stats(self):
         pass
 
-    def wait_for_machines(self, callback, scheduler=AsyncIOScheduler()):
+    def wait_for_machines(self,
+                          confirm_callback,
+                          create_callback,
+                          scheduler=AsyncIOScheduler()):
         """Creates a command listener for incoming machine requests.
-        The callback is used to create the actual virtual machine.
+        The confirm callback is used to confirm that the agent are
+        capable of creating the requested machine.
+        The create callback is used to create the actual virtual
+        machine.
         Returns a channel close function and the listener observable.
         """
 
-        stop, observable = self.messenger.get_command_listener(scheduler)
+        stop, observable = self.messenger \
+                               .get_command_listener(scheduler)
 
         def handle_error(message, error):
             """If by any reason the communication between the listener
@@ -176,11 +183,31 @@ class Connector:
             message.ack()
             return Observable.just(None)
 
+        def handle_confirm(message):
+            """Confirm if agent is capable of creating requested
+            machine. If not, then reject and requeue the message.
+            """
+
+            machine = message.json()
+
+            if confirm_callback(name=machine['name'],
+                                image=machine['image'],
+                                cpu=machine['cpu'],
+                                mem=machine['mem'],
+                                disc=machine['disc'],
+                                pkey=machine['pkey']):
+                return True
+
+            message.reject(requeue=True)
+
+            return False
+
         return stop, observable \
             .where(partial(filter_message,
                            dict(command='machine-requested'))) \
             .tap(lambda m: logging.debug('Machine requested: %s',
                                          m.body)) \
+            .where(handle_confirm) \
             .flat_map(
                 # Incoming machine request
                 lambda cm:
@@ -196,14 +223,14 @@ class Connector:
                                           m.body))
                     .map(lambda m: (cm.json(), m))
                     # Create the actual machine
-                    .map(lambda cm_m: (callback(stop,
-                                                cm_m[0]['name'],
-                                                cm_m[0]['image'],
-                                                cm_m[0]['cpu'],
-                                                cm_m[0]['mem'],
-                                                cm_m[0]['disc'],
-                                                cm_m[0]['pkey']),
-                                       cm_m[1]))
+                    .map(lambda cm_m: (create_callback(
+                            name=cm_m[0]['name'],
+                            image=cm_m[0]['image'],
+                            cpu=cm_m[0]['cpu'],
+                            mem=cm_m[0]['mem'],
+                            disc=cm_m[0]['disc'],
+                            pkey=cm_m[0]['pkey']),
+                        cm_m[1]))
                     .tap(
                         lambda vm_m:
                         logging.debug('Responding with machine: %s',

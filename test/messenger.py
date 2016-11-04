@@ -16,7 +16,7 @@ from clique_connector import Messenger
 from clique_connector.util import listener_error, filter_message
 
 
-logging.basicConfig(level=logging.DEBUG)
+# logging.basicConfig(level=logging.DEBUG)
 
 
 def get_response(messenger, checksum, test_values, response_checksum):
